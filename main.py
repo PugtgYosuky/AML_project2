@@ -21,8 +21,8 @@ from tensorflow.keras.losses import SparseCategoricalCrossentropy
 import tensorflow as tf
 # to ignore terminal warnings
 import warnings
-from sklearn.model_selection import train_test_split
 warnings.filterwarnings("ignore")
+from sklearn.model_selection import train_test_split
 
 
 from sklearn.metrics import make_scorer
@@ -42,13 +42,14 @@ def get_layer(layer_config):
     layer = layer_func(**layer_config)
     return layer
 
-def get_model(config):
+def get_model(config, num_classes, width=50, height=50):
     model = models.Sequential()
-    model.add(layers.InputLayer(input_shape=(50, 50, 3)))
+    model.add(layers.InputLayer(input_shape=(width, height, 3,)))
     
     for layer in config["layers"]:
-         model.add(get_layer(layer))
-
+        print(layer)
+        model.add(get_layer(layer))
+    model.add(layers.Dense(units=num_classes, activation='softmax'))
     loss = getattr(tf.keras.losses, config['loss'])
     model.compile(
         optimizer=config.get('optimizer', 'adam'),
@@ -85,7 +86,7 @@ if __name__ == '__main__':
     TARGET_PATH = os.path.join(LOGS_PATH, 'kaggle')
     os.makedirs(TARGET_PATH)
 
-    # gets the name of the config file and read´s it
+    # gets the name of the config file and reads it
     config_path = sys.argv[1]
     with open(config_path, 'r') as file:
         config = json.load(file)
@@ -95,30 +96,16 @@ if __name__ == '__main__':
         json.dump(config, outfile, indent=1)
 
     path = os.path.join('dataset')
-    X = np.load(os.path.join(path, 'trainX.npy')) / 255
+    X = np.load(os.path.join(path, 'trainX.npy'))
     y = np.load(os.path.join(path, 'trainy.npy'), allow_pickle=True).astype(int)
-    X_test = np.load(os.path.join(path, 'testX.npy')) / 255
+    X_test = np.load(os.path.join(path, 'testX.npy'))
 
     width = 50
     height = 50
     num_classes = 6
-
-    
-    config = {
-        'metrics' : ['accuracy'],
-        'optimizer' : 'adam',
-        'loss' : 'SparseCategoricalCrossentropy',
-        'layers' : [
-            {'type' : 'Flatten'},
-            {'type':'Dense', 'units': 100, 'activation': 'relu'}
-        ],
-        'epochs' : 1,
-        'validation_split' : 0.2
-    }
-
     x_train, x_test, y_train, y_test = train_test_split(X, y)
 
-    model = get_model(config)
+    model = get_model(config, num_classes)
 
     history = model.fit(
         x_train, 
