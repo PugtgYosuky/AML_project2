@@ -1,0 +1,12 @@
+{
+    "metrics" : ["accuracy"],
+        "optimizer" : "adam",
+        "loss" : "SparseCategoricalCrossentropy",
+        "layers" : [
+            {"type" : "Flatten"},
+            {"type":"Dense", "units": 100, "activation": "relu"}
+        ],
+        "epochs" : 10,
+        "validation_split" : 0.2
+
+}
