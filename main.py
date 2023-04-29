@@ -26,6 +26,8 @@ import warnings
 warnings.filterwarnings("ignore")
 from sklearn.model_selection import train_test_split
 import random
+from tensorflow.keras.applications.vgg16 import VGG16
+from tensorflow.keras.applications.vgg16 import preprocess_input
 
 # plot parameters
 plt.rcParams["figure.figsize"] = (20,12)
@@ -64,16 +66,35 @@ def get_model(config, num_classes, width=50, height=50):
     model.add(layers.InputLayer(input_shape=(width, height, 3,)))
     
     for layer in config["layers"]:
-        print(layer)
         model.add(get_layer(layer))
     model.add(layers.Dense(units=num_classes, activation='softmax'))
     loss = getattr(tf.keras.losses, config['loss'])
+    optimizer = getattr(tf.keras.optimizers, config['optimizer'])
     model.compile(
-        optimizer=config.get('optimizer', 'adam'),
+        optimizer=optimizer(learning_rate=config['learning_rate']),
         loss=loss(),
         metrics=config['metrics'],
-        # run_eagerly=True
     )
+    # base_model = VGG16(weights=None, include_top=False, input_shape=(width, height, 3))
+    # base_model.trainable = True
+    # loss = getattr(tf.keras.losses, config['loss'])
+    # model = models.Sequential(
+    #     [
+    #         layers.RandomFlip(model='horizontal', seed=42), 
+    #         layers.RandomBrightness(0.2, seed=42), 
+    #         layers.RandomRotation(0.2, seed=42), 
+    #         base_model,
+    #         layers.Flatten(),
+    #         layers.Dense(256, activation='relu'),
+    #         layers.Dense(units=num_classes, activation='softmax')
+    #      ]
+    # )
+    # model.compile(
+    #     optimizer=tf.keras.optimizers.Adam(learning_rate=1e-4), #config.get('optimizer', 'adam'),
+    #     loss=loss(),
+    #     metrics=config['metrics'],
+    # )
+
     return model
 
 
@@ -81,8 +102,12 @@ def fit_and_predict_dataset(config, num_classes, x_train, x_test, y_train, y_tes
     # with train dataset and test split
     model = get_model(config, num_classes)
     # early stopping
-    early_stopping_loss = EarlyStopping(monitor = 'val_loss', patience = config['patience'])
-    early_stopping_accuracy = EarlyStopping(monitor = 'val_accuracy', patience = config['patience'])
+    early_stopping_loss = EarlyStopping(
+        monitor = 'val_loss', 
+        patience = config['patience'], 
+        restore_best_weights = True,
+        )
+    early_stopping_accuracy = EarlyStopping(monitor = 'val_accuracy', patience = config['patience'], mode='max', restore_best_weights=True)
     # split train data into train and val
     x_train, x_val, y_train, y_val = train_test_split(x_train, y_train, test_size=config['validation_split'], shuffle=True, stratify=y_train, random_state=42)
     # fit model
@@ -92,7 +117,8 @@ def fit_and_predict_dataset(config, num_classes, x_train, x_test, y_train, y_tes
         # validation_split=config['validation_split'], 
         validation_data = (x_val, y_val),
         epochs=config['epochs'],
-        callbacks=[early_stopping_loss, early_stopping_accuracy]
+        callbacks=[early_stopping_loss],
+        batch_size=config['batch_size']
     )
 
     with open(os.path.join(LOGS_PATH, f'{prefix}_model_summary.txt'), 'w') as f:
@@ -183,6 +209,9 @@ if __name__ == '__main__':
     X = np.load(os.path.join(path, 'trainX.npy'))
     y = np.load(os.path.join(path, 'trainy.npy'), allow_pickle=True).astype(int)
     X_test = np.load(os.path.join(path, 'testX.npy'))
+
+    X = X / 255
+    X_test = X_test / 255
 
     width = 50
     height = 50
