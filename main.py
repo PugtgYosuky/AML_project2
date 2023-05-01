@@ -59,7 +59,6 @@ def set_global_determinism(seed):
 
 def get_layer(layer_config):
     layer_config = layer_config.copy()
-    print(layer_config)
     layer_name = layer_config.pop('type')
     layer_func = getattr(tf.keras.layers, layer_name)
     layer = layer_func(**layer_config)
