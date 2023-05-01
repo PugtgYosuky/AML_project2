@@ -96,6 +96,11 @@ def get_model(config, num_classes, width=50, height=50):
     )
     return model
 
+def write_predictions(preds):
+    test_df = pd.DataFrame()
+    test_df['number'] = np.arange(len(preds))
+    test_df['class'] = preds
+    return test_df
 
 def fit_and_predict_dataset(config, num_classes, x_train, x_test, y_train, y_test=None, prefix='', path='', seed=42):
     # with train dataset and test split
@@ -127,9 +132,7 @@ def fit_and_predict_dataset(config, num_classes, x_train, x_test, y_train, y_tes
     predictions = model.predict(x_test)
     preds = np.argmax(predictions, axis=1)
 
-    test_df = pd.DataFrame()
-    test_df['number'] = np.arange(len(preds))
-    test_df['class'] = preds
+    test_df = write_predictions(preds)
 
 
     pprint.pprint(history.history)
@@ -172,15 +175,15 @@ def fit_and_predict_dataset(config, num_classes, x_train, x_test, y_train, y_tes
 def ensemble_models(config, num_classes, x_train, x_test, y_train, y_test, prefix='ensemble_train', path='', seed=42):
     predictions = pd.DataFrame()
     indexes = np.arange(0, len(x_train))
-    for i in range(3):
+    for i in range(config['ensemble_n_estimators']):
         # with replacement
         sample_indexes = np.random.choice(indexes, int(len(x_train*0.7)))
         x_train_aux = x_train[sample_indexes]
         y_train_aux = y_train[sample_indexes]
-        preds = fit_and_predict_dataset(config.copy(), num_classes, x_train_aux, x_test, y_train_aux, y_test=y_test, prefix=f'ensemble_model{i}',path=path, seed=seed)
+        preds = fit_and_predict_dataset(config.copy(), num_classes, x_train_aux, x_test, y_train_aux, y_test=y_test, prefix=f'{prefix}_{i}',path=path, seed=seed)
         predictions[f'model_{i}'] = preds
 
-    p = predictions.mode(axis=1).to_numpy()[:, 0]
+    p = predictions.mode(axis=1).to_numpy()[:, 0].astype(int)
     return p
 
 # main funtion of python
@@ -266,4 +269,10 @@ if __name__ == '__main__':
         print('PREDICT KAGGLE DATASET')
         # print(config)
         fit_and_predict_dataset(config.copy(), num_classes, X, X_test, y, y_test=None, prefix='kaggle', path=LOGS_PATH, seed=seed)
-
+        
+        if config.get('ensemble', False):
+            print('Ensemble models')
+            # x_train, x_test, y_train, y_test = train_test_split(X, y, train_size=config['train_split'], shuffle=True, stratify=y, random_state=seed)
+            preds = ensemble_models(config.copy(), num_classes, X, X_test, y, y_test=None, prefix='kaggle_ensemble', path=LOGS_PATH, seed=seed)
+            test_df = write_predictions(preds)
+            test_df.to_csv(os.path.join(LOGS_PATH, f'{exp}_kaggle_ensemble_all.csv'), index=False)

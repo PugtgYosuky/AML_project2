@@ -62,6 +62,7 @@
     "patience": 5,
     "batch_size": 32,
     "cross-validation" : false,
-    "predict-kaggle" : false,
-    "ensemble" : true
+    "predict-kaggle" : true,
+    "ensemble" : true,
+    "ensemble_n_estimators" : 3
    }
