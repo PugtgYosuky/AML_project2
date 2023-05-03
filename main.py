@@ -66,7 +66,7 @@ def get_layer(layer_config):
 
 def get_model(config, num_classes, width=50, height=50):
     loss = getattr(tf.keras.losses, config['loss'])
-    optimizer = getattr(tf.keras.optimizers, config['optimizer'])
+    optimizer = getattr(tf.keras.optimizers.legacy, config['optimizer'])
     model = models.Sequential()
     model.add(layers.InputLayer(input_shape=(width, height, 3)))
     for layer in config["layers"]:
@@ -114,6 +114,7 @@ def fit_and_predict_dataset(config, num_classes, x_train, x_test, y_train, y_tes
     # split train data into train and val
     x_train, x_val, y_train, y_val = train_test_split(x_train, y_train, test_size=config['validation_split'], shuffle=True, stratify=y_train, random_state=seed)
     # fit model
+    
     history = model.fit(
         x_train, 
         y_train, 
@@ -130,9 +131,7 @@ def fit_and_predict_dataset(config, num_classes, x_train, x_test, y_train, y_tes
     # predict test from train dataset
     predictions = model.predict(x_test)
     preds = np.argmax(predictions, axis=1)
-
     test_df = write_predictions(preds)
-
 
     pprint.pprint(history.history)
     
@@ -143,6 +142,14 @@ def fit_and_predict_dataset(config, num_classes, x_train, x_test, y_train, y_tes
         test_df['real'] = y_test
         # save predictions
         test_df.to_csv(os.path.join(path, f'{prefix}_prediction_{exp}.csv'), index=False)
+        # confusion matrix 
+        cm = metrics.confusion_matrix(y_test, preds)
+        # save confusion matrix as image
+        plt.figure()
+        disp = metrics.ConfusionMatrixDisplay(cm, display_labels=['buildings', 'forest', 'glacier', 'mountain', 'sea', 'street'])
+        disp.plot()
+        plt.title('Confusion matrix')
+        plt.savefig(os.path.join(LOGS_PATH, f'{prefix}_confusion_matrix.png'))
     else:
         test_df.to_csv(os.path.join(path, f'{prefix}_prediction_{exp}.csv'), index=False)
     with open(os.path.join(path, f'{prefix}_history.json'), 'w') as outfile:
