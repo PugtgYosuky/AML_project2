@@ -1,7 +1,7 @@
 """
         ACA Project
 
-        ATHORS:
+        AUTHORS:
             Joana Simões
             Pedro Carrasco
 """

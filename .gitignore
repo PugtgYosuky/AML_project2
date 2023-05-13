@@ -131,3 +131,4 @@ dmypy.json
 # ignore dataset
 dataset/
 logs/
+logs_part1/

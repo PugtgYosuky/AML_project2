@@ -1,7 +1,7 @@
 """
         ACA Project
 
-        ATHORS:
+        AUTHORS:
             Joana Simões
             Pedro Carrasco
 """
@@ -43,6 +43,9 @@ plt.rcParams['lines.linewidth'] = 3
 
 # fix seeds: code from https://stackoverflow.com/questions/36288235/how-to-get-stable-results-with-tensorflow-setting-random-seed
 def set_global_determinism(seed):
+    """
+    Fix seeds for reproducibility
+    """
     os.environ['PYTHONHASHSEED'] = str(seed)
     random.seed(seed)
     tf.random.set_seed(seed)
@@ -58,6 +61,9 @@ def set_global_determinism(seed):
 
 
 def get_layer(layer_config):
+    """
+    Converts a layers form the config file into a keras layer
+    """
     layer_config = layer_config.copy()
     layer_name = layer_config.pop('type')
     layer_func = getattr(tf.keras.layers, layer_name)
@@ -65,45 +71,75 @@ def get_layer(layer_config):
     return layer
 
 def get_model(config, num_classes, width=50, height=50):
+    """
+    Instantiates a keras model
+    """
     loss = getattr(tf.keras.losses, config['loss'])
     optimizer = getattr(tf.keras.optimizers.legacy, config['optimizer'])
+    model_name = config.get('deep-model', None)
+    
     model = models.Sequential()
-    model.add(layers.InputLayer(input_shape=(width, height, 3)))
-    for layer in config["layers"]:
-        model.add(get_layer(layer))
+    base_model = None
+    if model_name is None:
+        model = models.Sequential()
+        model.add(layers.InputLayer(input_shape=(width, height, 3)))
+        for layer in config["layers"]:
+            model.add(get_layer(layer))
+        model.add(layers.Dense(units=num_classes, activation='softmax'))
+    else:
+        model.add(layers.InputLayer(input_shape=(width, height, 3)))
+        model.add(layers.RandomFlip(mode='horizontal'))
+        model.add(layers.RandomBrightness(factor=0.2, value_range=(0.0, 1.0)))
+        model.add(layers.RandomContrast(factor=0.2))
+        model.add(layers.RandomRotation(factor=0.2))
+        if model_name == 'vgg16':
+            base_model = VGG16(
+                weights='imagenet', 
+                include_top=False,
+                pooling = 'max',
+                input_shape=(width, height, 3),
+                )
+        elif model_name == 'resnet50': 
+            base_model = ResNet50(
+                weights='imagenet', 
+                include_top=False,
+                pooling = 'max',
+                input_shape=(width, height, 3),
+                )
+        else:
+            model.add(layers.Resizing(width=72, height=72))
+            base_model = Xception(
+                weights='imagenet', 
+                include_top=False,
+                pooling = 'max',
+                input_shape=(72, 72, 3),
+                )  
+        base_model.trainable = False
+        model.add(base_model)
     model.add(layers.Dense(units=num_classes, activation='softmax'))
-
-    # base_model = Xception(weights='imagenet', include_top=False)
-    # base_model.trainable = False
-    # loss = getattr(tf.keras.losses, config['loss'])
-    # model = models.Sequential(
-    #     [   
-    #         layers.InputLayer(input_shape=(width, height, 3)),
-    #         layers.Resizing(width=72, height=72),
-    #         base_model,
-    #         layers.Dropout(0.2),
-    #         layers.Flatten(),
-    #         layers.Dense(50, activation='relu'),
-    #         layers.Dense(20, activation='relu'),
-    #         layers.Dense(units=num_classes, activation='softmax')
-    #      ]
-    # )
     model.compile(
         optimizer=optimizer(learning_rate=config['learning_rate']),
         loss=loss(),
         metrics=config['metrics'],
     )
-    return model
+    print(model.summary())
+    return model, base_model
 
 def write_predictions(preds):
+    # writes predictions
     test_df = pd.DataFrame()
     test_df['number'] = np.arange(len(preds))
     test_df['class'] = preds
     return test_df
 
-def fit_and_predict_dataset(config, num_classes, x_train, x_test, y_train, y_test=None, prefix='', path='', seed=42):
+def fit_and_predict_dataset(config, num_classes, x_train, x_test, y_train, y_test=None, prefix='', path='', seed=42, x_val=None, y_val=None):
+    """
+    Train and predict given a certain dataset
+    """
+
     # with train dataset and test split
-    model = get_model(config, num_classes)
+    model, base_model = get_model(config, num_classes)
+
     # early stopping
     early_stopping_loss = EarlyStopping(
         monitor = 'val_loss', 
@@ -112,9 +148,9 @@ def fit_and_predict_dataset(config, num_classes, x_train, x_test, y_train, y_tes
         )
     early_stopping_accuracy = EarlyStopping(monitor = 'val_accuracy', patience = config['patience'], mode='max', restore_best_weights=True)
     # split train data into train and val
-    x_train, x_val, y_train, y_val = train_test_split(x_train, y_train, test_size=config['validation_split'], shuffle=True, stratify=y_train, random_state=seed)
+    if x_val is None:
+        x_train, x_val, y_train, y_val = train_test_split(x_train, y_train, test_size=config['validation_split'], shuffle=True, stratify=y_train, random_state=seed)
     # fit model
-    
     history = model.fit(
         x_train, 
         y_train, 
@@ -124,6 +160,37 @@ def fit_and_predict_dataset(config, num_classes, x_train, x_test, y_train, y_tes
         callbacks=[early_stopping_loss],
         batch_size=config['batch_size']
     )
+
+    # fine-tune the model
+    if config.get('deep-model', None) is not None:
+        with open(os.path.join(path, f'{prefix}_history-prev-finetuning.json'), 'w') as outfile:
+            json.dump(history.history, outfile, indent=1)
+        print('Fine-tunning')
+        base_model.trainable = True
+
+        model.compile(
+            optimizer = tf.keras.optimizers.legacy.Adam(learning_rate=1e-5),
+            loss = tf.keras.losses.SparseCategoricalCrossentropy(),
+            metrics = config['metrics'],
+        )
+        early_stopping_loss = EarlyStopping(
+            monitor = 'val_loss', 
+            patience = 10, 
+            restore_best_weights = True,
+            )
+        history = model.fit(
+            x_train, 
+            y_train, 
+            # validation_split=config['validation_split'], 
+            validation_data = (x_val, y_val),
+            epochs=2,
+            callbacks=[early_stopping_loss],
+            batch_size=config['batch_size']
+        )
+
+    with open(os.path.join(path, f'{prefix}_history.json'), 'w') as outfile:
+        json.dump(history.history, outfile, indent=1)
+
     model.save(os.path.join(path, f'{prefix}_model.h5'))
     with open(os.path.join(LOGS_PATH, f'{prefix}_model_summary.txt'), 'w') as f:
         model.summary(print_fn=lambda x: f.write(x + '\n'))
@@ -131,6 +198,18 @@ def fit_and_predict_dataset(config, num_classes, x_train, x_test, y_train, y_tes
     # predict test from train dataset
     predictions = model.predict(x_test)
     preds = np.argmax(predictions, axis=1)
+    
+    # predict the worst classes with the binary classifier
+    if config.get('predict_binary', False):
+        classes = [[0, 5], [2, 3], [2, 4]]
+        for class_a, class_b in classes:
+            print(class_a)
+            print(class_b)
+            indexes = (preds == class_a) | (preds == class_b)
+            test_classes = x_test[indexes]
+            preds_bin = binary_classifier(class_a, class_b, test_classes)
+            preds[indexes] = preds_bin.T[:, 0]
+
     test_df = write_predictions(preds)
 
     pprint.pprint(history.history)
@@ -152,9 +231,9 @@ def fit_and_predict_dataset(config, num_classes, x_train, x_test, y_train, y_tes
         plt.savefig(os.path.join(LOGS_PATH, f'{prefix}_confusion_matrix.png'))
     else:
         test_df.to_csv(os.path.join(path, f'{prefix}_prediction_{exp}.csv'), index=False)
-    with open(os.path.join(path, f'{prefix}_history.json'), 'w') as outfile:
-        json.dump(history.history, outfile, indent=1)
 
+
+    # get metrics
     acc = history.history['accuracy']
     val_acc = history.history['val_accuracy']
     loss = history.history['loss']
@@ -179,20 +258,56 @@ def fit_and_predict_dataset(config, num_classes, x_train, x_test, y_train, y_tes
     return preds
 
 def ensemble_models(config, num_classes, x_train, x_test, y_train, y_test, prefix='ensemble_train', path='', seed=42):
+    # ensemble by training the same model with different parts of the dataset
     predictions = pd.DataFrame()
-    indexes = np.arange(0, len(x_train))
-    for i in range(config['ensemble_n_estimators']):
+    kfold = StratifiedKFold(n_splits=config['ensemble_n_estimators'], shuffle=True, random_state=seed)
+    for i, (train_indexes, val_indexes) in enumerate(kfold.split(x_train, y_train)):
         # with replacement
-        sample_indexes = np.random.choice(indexes, int(len(x_train*0.7)))
-        x_train_aux = x_train[sample_indexes]
-        y_train_aux = y_train[sample_indexes]
-        preds = fit_and_predict_dataset(config.copy(), num_classes, x_train_aux, x_test, y_train_aux, y_test=y_test, prefix=f'{prefix}_{i}',path=path, seed=seed)
+        print('Ensemble model', i)
+        x_train_aux = x_train[train_indexes]
+        y_train_aux = y_train[train_indexes]
+        x_val_aux = x_train[val_indexes]
+        y_val_aux = y_train[val_indexes]
+        preds = fit_and_predict_dataset(config.copy(), num_classes, x_train_aux, x_test, y_train_aux, y_test=y_test, prefix=f'{prefix}_{i}',path=path, seed=seed, x_val=x_val_aux, y_val=y_val_aux)
         predictions[f'model_{i}'] = preds
 
     p = predictions.mode(axis=1).to_numpy()[:, 0].astype(int)
     return p
 
-# main funtion of python
+def get_binary_model():
+    # binary models
+    model = models.Sequential()
+    model.add(layers.InputLayer(input_shape=(50, 50, 3)))
+    model.add(layers.Conv2D(16, kernel_size=3, activation='relu'))
+    model.add(layers.MaxPooling2D(pool_size=2))
+    model.add(layers.Conv2D(32, kernel_size=3, activation='relu'))
+    model.add(layers.MaxPooling2D(pool_size=2))
+    model.add(layers.Conv2D(64, kernel_size=3, activation='relu'))
+    model.add(layers.MaxPooling2D(pool_size=2))
+    model.add(layers.Flatten())
+    model.add(layers.Dense(128, activation='relu'))
+    model.add(layers.Dropout(0.2))
+    model.add(layers.Dense(1, activation='sigmoid'))
+
+    model.compile(
+        optimizer='adam',
+        loss='binary_crossentropy',
+        metrics='accuracy',
+        run_eagerly=True
+    )
+    return model
+
+def binary_classifier(class_a, class_b, x_test):
+    model = models.load_model(f'binary_models/{class_a}_{class_b}_model.h5')
+    predictions = model.predict(x_test)
+    predictions[predictions > 0.5] = class_b
+    predictions[predictions <= 0.5] = class_a
+    print(class_a, class_b)
+    print(np.unique(predictions))
+
+    return predictions
+
+# main function of python
 if __name__ == '__main__':
     seed = 1257623
     set_global_determinism(seed)
@@ -217,10 +332,6 @@ if __name__ == '__main__':
     # crate the new experience folder
     LOGS_PATH = os.path.join('logs', exp)
     os.makedirs(LOGS_PATH)
-    # PREDICTIONS_PATH = os.path.join(LOGS_PATH, 'predictions')
-    # os.makedirs(PREDICTIONS_PATH)
-    # TARGET_PATH = os.path.join(LOGS_PATH, 'kaggle')
-    # os.makedirs(TARGET_PATH)
 
     # gets the name of the config file and reads it
     config_path = sys.argv[1]
@@ -242,33 +353,33 @@ if __name__ == '__main__':
     width = 50
     height = 50
     num_classes = 6
-
-    if config.get('cross-validation', False):
-        accuracies = []
-        kfold = StratifiedKFold(shuffle=True, random_state=seed)
-        for fold, (train_indexes, test_indexes) in enumerate(kfold.split(X, y)):
-            x_train = X[train_indexes]
-            x_test = X[test_indexes]
-            y_train = y[train_indexes]
-            y_test = y[test_indexes]
-            # fit and predict train dataset
-            print(f'FOLD {fold} - PREDICT TRAIN DATASET')
-            preds = fit_and_predict_dataset(config.copy(), num_classes, x_train, x_test, y_train, y_test=y_test, prefix=f'test_split_fold{fold}', path=LOGS_PATH, seed=seed)
-            accuracies.append(metrics.accuracy_score(y_test, preds))
-        
-        print(accuracies)
-        print('AVERAGE ACCURACY', np.mean(accuracies))
-    elif config.get('ensemble', False):
-        print('Ensemble models')
-        x_train, x_test, y_train, y_test = train_test_split(X, y, train_size=config['train_split'], shuffle=True, stratify=y, random_state=seed )
-        preds = ensemble_models(config.copy(), num_classes, x_train, x_test, y_train, y_test, prefix='ensemble_train', path=LOGS_PATH, seed=seed)
-        with open(os.path.join(path, f'ensemble_classification_report.txt'), 'w') as file:
-            file.write(metrics.classification_report(y_test, preds))
-        print(metrics.classification_report(y_test, preds))
-    else:
-        print('PREDICT TRAIN DATASET')
-        x_train, x_test, y_train, y_test = train_test_split(X, y, train_size=config['train_split'], shuffle=True, stratify=y, random_state=seed )
-        preds = fit_and_predict_dataset(config.copy(), num_classes, x_train, x_test, y_train, y_test=y_test, prefix=f'test_split',path=LOGS_PATH, seed=seed)
+    if config.get('only-kaggle', False) == False:
+        if config.get('cross-validation', False):
+            accuracies = []
+            kfold = StratifiedKFold(shuffle=True, random_state=seed)
+            for fold, (train_indexes, test_indexes) in enumerate(kfold.split(X, y)):
+                x_train = X[train_indexes]
+                x_test = X[test_indexes]
+                y_train = y[train_indexes]
+                y_test = y[test_indexes]
+                # fit and predict train dataset
+                print(f'FOLD {fold} - PREDICT TRAIN DATASET')
+                preds = fit_and_predict_dataset(config.copy(), num_classes, x_train, x_test, y_train, y_test=y_test, prefix=f'test_split_fold{fold}', path=LOGS_PATH, seed=seed)
+                accuracies.append(metrics.accuracy_score(y_test, preds))
+            
+            print(accuracies)
+            print('AVERAGE ACCURACY', np.mean(accuracies))
+        elif config.get('ensemble', False):
+            print('Ensemble models')
+            x_train, x_test, y_train, y_test = train_test_split(X, y, train_size=config['train_split'], shuffle=True, stratify=y, random_state=seed )
+            preds = ensemble_models(config.copy(), num_classes, x_train, x_test, y_train, y_test, prefix='ensemble_train', path=LOGS_PATH, seed=seed)
+            with open(os.path.join(path, f'ensemble_classification_report.txt'), 'w') as file:
+                file.write(metrics.classification_report(y_test, preds))
+            print(metrics.classification_report(y_test, preds))
+        else:
+            print('PREDICT TRAIN DATASET')
+            x_train, x_test, y_train, y_test = train_test_split(X, y, train_size=config['train_split'], shuffle=True, stratify=y, random_state=seed )
+            preds = fit_and_predict_dataset(config.copy(), num_classes, x_train, x_test, y_train, y_test=y_test, prefix=f'test_split',path=LOGS_PATH, seed=seed)
 
     if config.get('predict-kaggle', 'False'):
         # predict kaggle dataset
